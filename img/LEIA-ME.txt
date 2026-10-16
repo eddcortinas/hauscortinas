@@ -4,14 +4,13 @@ FOTOS DO SITE
 Para trocar uma foto, envie outra com EXATAMENTE o mesmo nome para esta pasta (img).
 Se uma foto não existir, o site mostra um bloco cinza com a descrição (sem quebrar o layout).
 
-logo-haus.svg                     Logo provisória em texto (usada no gerador e no PDF)
-logo-haus.png                     (a enviar) Logo com fundo transparente. Ao chegar,
-                                  trocar no js/orcamento.js (EMPRESA.logo), no orcamento.html
-                                  e, se quiser, no cabeçalho/rodapé das páginas.
-favicon.svg / favicon-180.png     Ícone da aba do navegador ("h" + "a" em mostarda)
+logo-haus.png                     Logo com fundo transparente (cabeçalho, gerador e PDF).
+                                  Recortada de uma imagem pequena: trocar pelo arquivo original em alta.
+logo-haus-claro.png               A mesma logo em tom claro, para o rodapé escuro
+favicon-64.png / favicon-180.png  Ícone da aba do navegador e do celular
 og-image.jpg                      Imagem que aparece ao compartilhar o link (1200 x 630)
-hero.jpg                          (a enviar) Foto grande do topo (vertical, 900 x 1080)
-sobre.jpg                         (a enviar) Foto da loja ou da proprietária (vertical, 900 x 1125)
+hero.jpg                          Foto do topo (quadrada; hoje é a imagem da marca com a logo)
+sobre.jpg                         Foto da proprietária ("Novo espaço, a mesma essência"); enviar em alta se tiver
 
 Produtos (horizontal 960 x 720 ou quadrada 720 x 720):
 produto-tecido.jpg                Cortina de tecido

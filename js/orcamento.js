@@ -15,7 +15,7 @@ const EMPRESA = {
   ],
   telefone: "(85) 9432-4398",
   site: "hauscortinas.com.br",
-  logo: "img/logo-haus.svg", // trocar por "img/logo-haus.png" quando chegar a logo
+  logo: "img/logo-haus.png",
 };
 
 // HAUS: revisar garantia e regras (texto de partida, ainda não confirmado pela Haus)
@@ -514,7 +514,9 @@ async function gerarPDF() {
 
   try {
     const logo = await imagemParaDataURL(EMPRESA.logo, 480, "image/png");
-    const lw = 46; doc.addImage(logo.data, "PNG", M, 18, lw, lw * logo.h / logo.w);
+    // Cabe numa caixa de 46 x 24 mm (a logo da Haus é mais alta que larga)
+    const esc = Math.min(46 / logo.w, 24 / logo.h);
+    doc.addImage(logo.data, "PNG", M, 17, logo.w * esc, logo.h * esc);
   } catch (e) {
     doc.setFontSize(18); doc.text(EMPRESA.nome, M, 30);
   }

@@ -1397,3 +1397,11 @@ h3 { font-weight: 600; }
 .section--escura .section__head p:last-child { color: rgba(246, 243, 238, .8); }
 .modelo__bloco ul { list-style: disc; }
 .modelo__bloco li::marker { color: var(--destaque); }
+
+/* Logo da Haus (img/logo-haus.png e a versão clara no rodapé) */
+.logo img { height: 54px; width: auto; }
+.logo--light img { height: 76px; }
+@media (max-width: 860px) { .logo img { height: 44px; } .logo--light img { height: 64px; } }
+
+/* Foto do topo: imagem da marca, quadrada para não cortar a logo */
+.hero:not(.hero--modelo) .hero__media { aspect-ratio: 1 / 1; }
