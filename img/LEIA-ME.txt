@@ -5,12 +5,16 @@ Para trocar uma foto, envie outra com EXATAMENTE o mesmo nome para esta pasta (i
 Se uma foto não existir, o site mostra um bloco cinza com a descrição (sem quebrar o layout).
 
 logo-haus.png                     Logo com fundo transparente (cabeçalho, gerador e PDF).
-                                  Recortada de uma imagem pequena: trocar pelo arquivo original em alta.
+                                  Refeita a partir de uma imagem pequena: trocar pelo arquivo original quando tiver.
 logo-haus-claro.png               A mesma logo em tom claro, para o rodapé escuro
 favicon-64.png / favicon-180.png  Ícone da aba do navegador e do celular
 og-image.jpg                      Imagem que aparece ao compartilhar o link (1200 x 630)
-hero.jpg                          Foto do topo (quadrada; hoje é a imagem da marca com a logo)
+hero.jpg                          Foto do topo (quadrada, 1100 x 1100)
 sobre.jpg                         Foto da proprietária ("Novo espaço, a mesma essência"); enviar em alta se tiver
+
+FOTOS ILUSTRATIVAS: os produtos e as "Inspirações" (projeto-01 a 06) e o hero.jpg são fotos
+de banco de imagens do Unsplash (unsplash.com, licença livre para uso comercial, sem crédito
+obrigatório). Troque pelas fotos reais da Haus assim que tiver.
 
 Produtos (horizontal 960 x 720 ou quadrada 720 x 720):
 produto-tecido.jpg                Cortina de tecido
@@ -26,7 +30,7 @@ produto-horizontal-25.jpg         Persiana horizontal 25 mm
 produto-ph50.jpg                  Persiana horizontal 50 mm alumínio
 produto-horizontal-50-madeira.jpg Persiana horizontal 50 mm madeira
 
-projeto-01.jpg ... projeto-06.jpg Galeria de projetos (fotos do Instagram; abrem ampliadas ao clicar)
+projeto-01.jpg ... projeto-06.jpg Galeria "Inspirações" (abrem ampliadas ao clicar)
                                   Para mais fotos, copie um bloco <figure> no index.html.
 
 Dicas:

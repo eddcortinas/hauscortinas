@@ -1405,3 +1405,4 @@ h3 { font-weight: 600; }
 
 /* Foto do topo: imagem da marca, quadrada para não cortar a logo */
 .hero:not(.hero--modelo) .hero__media { aspect-ratio: 1 / 1; }
+.galeria__nota { margin: 8px 0 0; font-size: .92rem; color: var(--texto-suave); }
