@@ -1,0 +1,36 @@
+FOTOS DO SITE
+=============
+
+Para trocar uma foto, envie outra com EXATAMENTE o mesmo nome para esta pasta (img).
+Se uma foto não existir, o site mostra um bloco cinza com a descrição (sem quebrar o layout).
+
+logo-haus.svg                     Logo provisória em texto (usada no gerador e no PDF)
+logo-haus.png                     (a enviar) Logo com fundo transparente. Ao chegar,
+                                  trocar no js/orcamento.js (EMPRESA.logo), no orcamento.html
+                                  e, se quiser, no cabeçalho/rodapé das páginas.
+favicon.svg / favicon-180.png     Ícone da aba do navegador ("h" + "a" em mostarda)
+og-image.jpg                      Imagem que aparece ao compartilhar o link (1200 x 630)
+hero.jpg                          (a enviar) Foto grande do topo (vertical, 900 x 1080)
+sobre.jpg                         (a enviar) Foto da loja ou da proprietária (vertical, 900 x 1125)
+
+Produtos (horizontal 960 x 720 ou quadrada 720 x 720):
+produto-tecido.jpg                Cortina de tecido
+produto-tecido-blackout.jpg       Cortina de tecido com blackout
+produto-rolo.jpg                  Cortina rolô
+produto-romana.jpg                Cortina romana
+produto-painel.jpg                Cortina painel
+produto-double-vision.jpg         Cortina double vision
+produto-motorizada.jpg            Cortina motorizada
+produto-vertical-tecido.jpg       Persiana vertical de tecido
+produto-vertical-pvc.jpg          Persiana vertical de PVC
+produto-horizontal-25.jpg         Persiana horizontal 25 mm
+produto-ph50.jpg                  Persiana horizontal 50 mm alumínio
+produto-horizontal-50-madeira.jpg Persiana horizontal 50 mm madeira
+
+projeto-01.jpg ... projeto-06.jpg Galeria de projetos (fotos do Instagram; abrem ampliadas ao clicar)
+                                  Para mais fotos, copie um bloco <figure> no index.html.
+
+Dicas:
+- Use fotos .jpg com até ~300 KB cada (dá para reduzir em squoosh.app ou tinypng.com).
+- Ao trocar uma foto de projeto, atualize no index.html o texto "alt" dela,
+  descrevendo o ambiente (ajuda no Google).

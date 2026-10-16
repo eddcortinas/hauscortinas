@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Gerar chaves do worker haus-acessos</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 32px auto; padding: 0 16px; color: #1F2A33; background: #F6F3EE; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input, textarea { width: 100%; padding: 10px; font: inherit; border: 1px solid #DDD5C8; border-radius: 8px; box-sizing: border-box; }
+    textarea { font-family: ui-monospace, monospace; font-size: 13px; height: 140px; }
+    button { margin-top: 16px; padding: 12px 20px; border: 0; border-radius: 999px; background: #D3AC2D; color: #1B3448; font-weight: 700; cursor: pointer; }
+    p.aviso { padding: 10px 14px; border-radius: 8px; background: #E3EBF1; }
+  </style>
+</head>
+<body>
+  <h1>Chaves do worker <code>haus-acessos</code></h1>
+  <p class="aviso">Abra este arquivo direto no computador (duplo clique). Nada é enviado para a internet: a conta é feita aqui no navegador. <strong>Não salve o resultado no repositório.</strong></p>
+  <label for="senha">Senha do administrador (mínimo 8 caracteres)</label>
+  <input type="password" id="senha" autocomplete="new-password">
+  <button type="button" id="gerar">Gerar</button>
+  <label for="saida">Cole estes valores no worker (no lugar de __DEFINIR_NO_WORKER__)</label>
+  <textarea id="saida" readonly></textarea>
+  <script>
+    // Mesma conta do worker: PBKDF2-SHA256, 10000 iterações, 256 bits, salt em texto
+    const enc = new TextEncoder();
+    const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    async function codigoSenha(senha, salt) {
+      const k = await crypto.subtle.importKey("raw", enc.encode(senha), "PBKDF2", false, ["deriveBits"]);
+      const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode(salt), iterations: 10000 }, k, 256);
+      return hex(bits);
+    }
+    document.querySelector("#gerar").addEventListener("click", async () => {
+      const senha = document.querySelector("#senha").value;
+      const saida = document.querySelector("#saida");
+      if (senha.length < 8) { saida.value = "A senha precisa ter pelo menos 8 caracteres."; return; }
+      const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
+      const chave = hex(crypto.getRandomValues(new Uint8Array(32)));
+      saida.value = `salt: "${salt}",\nhash: "${await codigoSenha(senha, salt)}",\n\nconst CHAVE = "${chave}";`;
+    });
+  </script>
+</body>
+</html>

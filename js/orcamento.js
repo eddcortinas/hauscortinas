@@ -1,0 +1,1208 @@
+/* =========================================================
+   Haus Cortinas e Ambientações — gerador de orçamento em PDF (página interna)
+   Os modelos e preços são lidos do simulador do index.html,
+   então basta atualizar os preços no site.
+   ========================================================= */
+
+// HAUS: preencher o CNPJ e conferir os dados
+const EMPRESA = {
+  nome: "Haus Cortinas e Ambientações",
+  linhas: [
+    "Rua Osvaldo Cruz, 2860 - Dionísio Torres",
+    "Fortaleza/CE - CEP 60125-071",
+    "(85) 9432-4398 - comercial@hauscortinas.com.br",
+    "CNPJ [PREENCHER]",
+  ],
+  telefone: "(85) 9432-4398",
+  site: "hauscortinas.com.br",
+  logo: "img/logo-haus.svg", // trocar por "img/logo-haus.png" quando chegar a logo
+};
+
+// HAUS: revisar garantia e regras (texto de partida, ainda não confirmado pela Haus)
+const CONSIDERACOES_PADRAO = [
+  "Por ser material confeccionado sob medida, não é possível cancelar ou modificar o pedido após a autorização, pois a fabricação é iniciada logo em seguida.",
+  "Prazo de garantia de cortinas manuais referente a defeitos de fabricação e instalação: 12 meses.",
+  "Prazo de garantia de cortinas motorizadas referente a defeitos de fabricação e instalação, desde que todas as manutenções e assistências sejam realizadas por nossa empresa: 60 meses.",
+  "Prazo de garantia referente aos serviços de manutenção: 90 dias.",
+  "Não fazemos marcação de horário predefinido para instalação.",
+  "Não nos responsabilizamos por danos causados na rede hidráulica em consequência de perfurações.",
+  "No caso de cortinas motorizadas, a pré-disposição elétrica é de responsabilidade do cliente.",
+].join("\n");
+
+const AREA_MINIMA = 1.5;
+const TECIDO_FRANZIDO = 3;
+const CHAVE_RASCUNHO = "haus-orcamento-rascunho";
+// Cada link de pedido tem o próprio rascunho; sem link, usa o rascunho geral
+let chaveRascunho = CHAVE_RASCUNHO;
+
+/* Numeração: ORC 10/26-001 (orçamento) e PED 10/26-001 (pedido); todo mês recomeça do 001.
+   O próximo número vem do servidor, que enxerga os documentos de todos os usuários. */
+const PREFIXO_NUMERO = { "Orçamento": "ORC", "Pedido": "PED" };
+const RE_NUMERO = /^(ORC|PED) (\d{2})\/(\d{2})-(\d+)$/;
+function baseNumero(tipo, data) {
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(data || "") ? data : hoje();
+  return `${PREFIXO_NUMERO[tipo === "Pedido" ? "Pedido" : "Orçamento"]} ${d.slice(5, 7)}/${d.slice(2, 4)}-`;
+}
+
+/* Condições comerciais
+   - Validade do orçamento: dias corridos a partir da data
+   - Previsão: maior prazo de produção entre os itens (dias úteis) + instalação
+   - Pagamento: à vista com desconto, ou cartão em parcelas sem juros sobre o total cheio */
+// HAUS: condições a confirmar (validade, instalação, desconto à vista e parcelas)
+const VALIDADE_DIAS = 15;
+const DIAS_INSTALACAO = 2;
+const PAGAMENTO = { descontoAvista: 6, parcelas: 8 };
+
+// Datas no formato do campo (AAAA-MM-DD), sem passar por UTC
+const paraData = (iso) => { const [a, m, d] = iso.split("-").map(Number); return new Date(a, m - 1, d); };
+const paraIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function somarDias(iso, dias) {
+  const d = paraData(iso);
+  d.setDate(d.getDate() + dias);
+  return paraIso(d);
+}
+// Dias úteis: pula sábado e domingo (feriados não entram)
+function somarDiasUteis(iso, dias) {
+  const d = paraData(iso);
+  while (dias > 0) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 0 && d.getDay() !== 6) dias--;
+  }
+  return paraIso(d);
+}
+const condicoesPagamento = (total) => ({
+  avista: total * (1 - PAGAMENTO.descontoAvista / 100),
+  parcela: total / PAGAMENTO.parcelas,
+});
+
+const reais = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const numero = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const form = document.querySelector("#orc");
+const listaItens = document.querySelector("#itens");
+const tplItem = document.querySelector("#tpl-item");
+const erro = document.querySelector("#erro");
+let MODELOS = []; // { nome, grupo, preco, calculo, alturamax, acessorios, fixo }
+
+/* ---------- Utilidades ---------- */
+function lerNumero(texto) {
+  const n = parseFloat(String(texto || "").replace(/\s/g, "").replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function lerMedida(texto) {
+  const n = parseFloat(String(texto || "").replace(/\s/g, "").replace(",", "."));
+  if (!n || n <= 0) return 0;
+  if (n >= 1000) return n / 1000;
+  return n > 20 ? n / 100 : n;
+}
+function soNumerosDecimal(campo) {
+  let v = campo.value.replace(/\./g, ",").replace(/[^\d,]/g, "");
+  const [a, ...b] = v.split(",");
+  v = b.length ? `${a},${b.join("").slice(0, 2)}` : a;
+  if (v !== campo.value) campo.value = v;
+}
+// Valores em R$: o ponto é separador de milhar ("1.200,23"), então é ignorado
+function soValorEmReais(campo) {
+  let v = campo.value.replace(/\./g, "").replace(/[^\d,]/g, "");
+  const [a, ...b] = v.split(",");
+  v = b.length ? `${a},${b.join("").slice(0, 2)}` : a;
+  if (v !== campo.value) campo.value = v;
+}
+function soInteiros(campo) {
+  const v = campo.value.replace(/\D/g, "");
+  if (v !== campo.value) campo.value = v;
+}
+// Data de hoje no fuso do aparelho (não em UTC)
+const hoje = () => {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+};
+const dataBR = (iso) => (iso ? iso.split("-").reverse().join("/") : "");
+
+/* ---------- Modelos (lidos do site) ---------- */
+async function carregarModelos() {
+  try {
+    const html = await (await fetch("index.html", { cache: "no-store" })).text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    doc.querySelectorAll("#sim-modelo option[data-preco]").forEach((op) => {
+      MODELOS.push({
+        nome: op.textContent.trim(),
+        grupo: op.parentElement.tagName === "OPTGROUP" ? op.parentElement.label : "Modelos",
+        preco: parseFloat(op.dataset.preco) || 0,
+        calculo: op.dataset.calculo || "",
+        alturamax: parseFloat(op.dataset.alturamax) || 2.8,
+        acessorios: parseFloat(op.dataset.acessorios) || 0,
+        acessoriosNome: op.dataset.acessoriosNome || "acessórios",
+        guia: parseFloat(op.dataset.guia) || 0,
+        prazo: parseInt(op.dataset.prazo, 10) || 0,
+      });
+    });
+  } catch (e) {
+    console.warn("Não foi possível ler os modelos do site", e);
+  }
+  MODELOS.push({ nome: "Kit instalação", grupo: "Outros (valor fixo)", preco: 0, fixo: true });
+  MODELOS.push({ nome: "Serviço / outro item", grupo: "Outros (valor fixo)", preco: 0, fixo: true });
+}
+
+function opcoesModelo() {
+  const grupos = {};
+  MODELOS.forEach((m, i) => { (grupos[m.grupo] = grupos[m.grupo] || []).push(`<option value="${i}">${m.nome}</option>`); });
+  return '<option value="">Selecione</option>' +
+    Object.entries(grupos).map(([g, ops]) => `<optgroup label="${g}">${ops.join("")}</optgroup>`).join("");
+}
+
+/* ---------- Cálculo de um item ---------- */
+function calcularItem(dados) {
+  const m = MODELOS[dados.modelo];
+  const qtd = Math.max(1, parseInt(dados.qtd, 10) || 1);
+  if (!m) return { total: 0, calc: "", medida: "" };
+  const manual = lerNumero(dados.unitario);
+  const preco = manual || m.preco;
+
+  if (m.fixo) {
+    return { total: preco * qtd, calc: preco ? `${qtd} x ${reais.format(preco)}` : "Informe o valor unitário.", medida: "", preco, qtd };
+  }
+
+  const largura = lerMedida(dados.largura);
+  const altura = lerMedida(dados.altura);
+  if (!largura || !altura) return { total: 0, calc: "Informe largura e altura.", medida: "", preco, qtd };
+
+  let real = largura * altura;
+  let un = "m²";
+  let extra = "";
+  if (m.calculo === "tecido") {
+    un = "m";
+    const larguraTecido = largura * TECIDO_FRANZIDO;
+    if (altura <= m.alturamax) {
+      real = larguraTecido;
+      extra = "3x a largura";
+    } else {
+      const panos = Math.ceil(larguraTecido / m.alturamax - 1e-9);
+      real = panos * altura;
+      extra = `tecido invertido, ${panos} pano(s) x ${numero.format(altura)} m`;
+    }
+  }
+  const minimo = real < AREA_MINIMA;
+  const cobrada = minimo ? AREA_MINIMA : real;
+  // Guia opcional (rolô): (altura x 2 + largura) x valor do metro da guia, por peça
+  const valorGuia = m.guia && dados.guia ? (altura * 2 + largura) * m.guia : 0;
+  const total = cobrada * preco * qtd + (m.acessorios || 0) * qtd + valorGuia * qtd;
+
+  const partes = [`${numero.format(cobrada)} ${un} x ${reais.format(preco)}`];
+  if (m.acessorios) partes.push(`+ ${m.acessoriosNome || "acessórios"} ${reais.format(m.acessorios)}`);
+  if (valorGuia) partes.push(`+ guia ${reais.format(valorGuia)}`);
+  if (qtd > 1) partes.push(`x ${qtd} peças`);
+  if (extra) partes.push(`(${extra})`);
+  if (minimo) partes.push(`- área mínima (real ${numero.format(real)} ${un})`);
+
+  return {
+    total,
+    calc: partes.join(" "),
+    medida: `${numero.format(largura)} x ${numero.format(altura)} m - ${numero.format(cobrada * qtd)} ${un}${minimo ? " (mín.)" : ""}`,
+    preco, qtd,
+  };
+}
+
+/* ---------- Itens na tela ---------- */
+function adicionarItem(dados = {}) {
+  const el = tplItem.content.firstElementChild.cloneNode(true);
+  const sel = el.querySelector('[data-campo="modelo"]');
+  sel.innerHTML = opcoesModelo();
+  Object.entries(dados).forEach(([k, v]) => {
+    const campo = el.querySelector(`[data-campo="${k}"]`);
+    if (campo && campo.type === "checkbox") campo.checked = !!v;
+    else if (campo && "value" in campo && campo.tagName !== "OUTPUT") campo.value = v;
+  });
+  // Campos conforme o modelo: guia só na rolô; item de valor fixo (avulso) não tem medidas
+  const caixaGuia = el.querySelector(".item__guia");
+  const medidas = el.querySelectorAll(".item__medida");
+  const rotuloDesc = el.querySelector(".item__desc-rotulo");
+  const ajustarCampos = () => {
+    const m = MODELOS[sel.value];
+    caixaGuia.hidden = !(m && m.guia);
+    if (caixaGuia.hidden) caixaGuia.querySelector("input").checked = false;
+    const avulso = !!(m && m.fixo);
+    medidas.forEach((l) => { l.hidden = avulso; });
+    rotuloDesc.textContent = avulso ? "Nome / descrição do item (aparece no PDF)" : "Descrição (tecido, cor, comando, instalação...)";
+  };
+  sel.addEventListener("change", ajustarCampos);
+  ajustarCampos();
+  ["largura", "altura"].forEach((k) => {
+    const c = el.querySelector(`[data-campo="${k}"]`);
+    c.addEventListener("input", () => soNumerosDecimal(c));
+  });
+  const unitario = el.querySelector('[data-campo="unitario"]');
+  unitario.addEventListener("input", () => soValorEmReais(unitario));
+  const q = el.querySelector('[data-campo="qtd"]');
+  q.addEventListener("input", () => soInteiros(q));
+  el.querySelector(".item__remover").addEventListener("click", () => { el.remove(); atualizar(); });
+  listaItens.appendChild(el);
+  atualizar();
+}
+
+function lerItens() {
+  return [...listaItens.querySelectorAll(".item")].map((el) => {
+    const d = {};
+    el.querySelectorAll("[data-campo]").forEach((c) => {
+      if (c.type === "checkbox") d[c.dataset.campo] = c.checked ? "1" : "";
+      else if (c.tagName !== "OUTPUT" && c.tagName !== "P") d[c.dataset.campo] = c.value;
+    });
+    return d;
+  });
+}
+
+// Totais do que está na tela
+function totais() {
+  return calcularTotais({
+    descontoPct: form.descontoPct.value, frete: form.frete.value,
+    desconto: form.desconto.value, descontoTipo: form.descontoTipo.value,
+  }, lerItens());
+}
+
+// Totais a partir dos campos e itens (da tela ou de um rascunho guardado)
+function calcularTotais(campos, listaDeItens) {
+  // Ajuste interno: "+10" aumenta e "-10" (ou só "10") diminui o preço de cada item.
+  // Não vira linha no PDF: o cliente só vê os itens e o subtotal já ajustados.
+  const ajuste = String(campos.descontoPct || "").trim();
+  const pctAjuste = lerNumero(ajuste.replace(/^[+-]/, ""));
+  const fator = 1 + (ajuste.startsWith("+") ? 1 : -1) * pctAjuste / 100;
+  const itens = listaDeItens.map((d) => {
+    const r = calcularItem(d);
+    return { dados: d, r, totalAjustado: Math.max(0, r.total * fator) };
+  });
+  const subtotalSemAjuste = itens.reduce((t, i) => t + i.r.total, 0);
+  const subtotal = itens.reduce((t, i) => t + i.totalAjustado, 0);
+  const frete = lerNumero(campos.frete);
+  // Desconto que aparece no PDF: em % (sobre o subtotal) ou em R$
+  const valorDesconto = lerNumero(campos.desconto);
+  const descontoEmPct = (campos.descontoTipo || "R$") === "%";
+  const desconto = Math.min(subtotal, descontoEmPct ? subtotal * valorDesconto / 100 : valorDesconto);
+  return {
+    itens, subtotal, frete, desconto,
+    descontoPct: descontoEmPct && valorDesconto ? valorDesconto : 0,
+    ajusteInterno: subtotal - subtotalSemAjuste,
+    total: Math.max(0, subtotal + frete - desconto),
+  };
+}
+
+function atualizar() {
+  const t = totais();
+  [...listaItens.querySelectorAll(".item")].forEach((el, i) => {
+    const { r, totalAjustado } = t.itens[i];
+    // Valor do item = o que vai para o PDF (já com o ajuste interno)
+    el.querySelector('[data-campo="total"]').textContent = reais.format(totalAjustado);
+    el.querySelector('[data-campo="calc"]').textContent = r.calc +
+      (t.ajusteInterno && r.total ? ` · sem ajuste: ${reais.format(r.total)}` : "");
+    const m = MODELOS[t.itens[i].dados.modelo];
+    el.querySelector('[data-campo="unitario"]').placeholder = m && !m.fixo ? `${reais.format(m.preco)} (auto)` : "valor";
+  });
+  document.querySelector("#r-subtotal").textContent = reais.format(t.subtotal);
+  document.querySelector("#r-frete").textContent = reais.format(t.frete);
+  document.querySelector("#r-desconto-rotulo").textContent = t.descontoPct ? `Desconto (${numero.format(t.descontoPct).replace(",00", "")}%)` : "Desconto";
+  document.querySelector("#r-desconto").textContent = reais.format(t.desconto);
+  // Só para você: quanto o ajuste interno mexeu no valor (não vai para o PDF)
+  document.querySelector("#dica-ajuste").textContent = t.ajusteInterno
+    ? `Ajuste interno: ${t.ajusteInterno > 0 ? "+" : "-"} ${reais.format(Math.abs(t.ajusteInterno))} já embutido no preço dos itens e no subtotal. Não aparece no PDF.`
+    : "O ajuste interno entra no preço de cada item e não aparece no PDF.";
+  document.querySelector("#r-total").textContent = reais.format(t.total);
+  atualizarDatas(t);
+  // Forma de pagamento: texto calculado pelo total, até você editar à mão
+  if (form.pagamentoAuto.value === "1") form.pagamento.value = textoPagamentoPadrao(t.total);
+  document.querySelector("#dica-pagamento").textContent = form.pagamentoAuto.value === "1"
+    ? "Preenchido sozinho pelo total. Pode editar à vontade."
+    : "Texto editado por você (não muda mais sozinho). Apague tudo para voltar ao cálculo automático.";
+  salvarRascunho();
+}
+
+function textoPagamentoPadrao(total) {
+  if (!total) return "";
+  const p = condicoesPagamento(total);
+  return `À vista: ${reais.format(p.avista)} (${PAGAMENTO.descontoAvista}% de desconto)\n` +
+    `Cartão: ${PAGAMENTO.parcelas}x de ${reais.format(p.parcela)} sem juros`;
+}
+
+// Validade (só orçamento) e previsão de entrega calculada pelos prazos dos itens
+function atualizarDatas(t) {
+  const ehPedido = form.tipo.value === "Pedido";
+  document.querySelector("#campo-validade").hidden = ehPedido;
+  if (form.data.value && !form.validade.value) form.validade.value = somarDias(form.data.value, VALIDADE_DIAS);
+
+  const maiorPrazo = Math.max(0, ...t.itens.map((i) => (MODELOS[i.dados.modelo] || {}).prazo || 0));
+  const dica = document.querySelector("#dica-prazo");
+  if (!maiorPrazo || !form.data.value) { dica.textContent = ""; return; }
+  if (form.previsaoAuto.value === "1") form.previsao.value = somarDiasUteis(form.data.value, maiorPrazo + DIAS_INSTALACAO);
+  dica.textContent = form.previsaoAuto.value === "1"
+    ? `Previsão calculada: ${maiorPrazo} dias úteis de produção (maior prazo entre os itens) + ${DIAS_INSTALACAO} de instalação.`
+    : "Previsão definida à mão. Apague a data para voltar ao cálculo automático.";
+}
+
+/* ---------- Rascunho (só neste aparelho) ---------- */
+// Tudo o que está na tela: { campos, itens } (serve para o rascunho e para salvar no servidor)
+function dadosAtuais() {
+  const campos = {};
+  [...form.elements].forEach((c) => {
+    if (c.name && c.type !== "file") campos[c.name] = c.type === "checkbox" ? c.checked : c.value;
+  });
+  // Guarda também o nome do modelo, para não trocar de modelo se a lista mudar
+  const itens = lerItens().map((d) => ({ ...d, nome: MODELOS[d.modelo] ? MODELOS[d.modelo].nome : "" }));
+  return { campos, itens };
+}
+function salvarRascunho() {
+  try { localStorage.setItem(chaveRascunho, JSON.stringify(dadosAtuais())); } catch (e) {}
+}
+// Itens guardados -> itens com o modelo certo da lista atual (pelo nome)
+function itensComModelo(itens) {
+  return (itens || []).map(({ nome, ...d }) => {
+    if (nome) { const i = MODELOS.findIndex((m) => m.nome === nome); d.modelo = i >= 0 ? String(i) : ""; }
+    return d;
+  });
+}
+// Coloca na tela um orçamento guardado ({ campos, itens })
+function aplicarDados(r) {
+  limparFormulario();
+  listaItens.innerHTML = "";
+  Object.entries(r.campos || {}).forEach(([k, v]) => {
+    const c = form[k];
+    if (!c || c.type === "file") return;
+    if (c.type === "checkbox") c.checked = v === true;
+    else c.value = v;
+  });
+  // Rascunho de antes do desconto em %: o desconto dele era em R$
+  if (!("descontoTipo" in (r.campos || {}))) form.descontoTipo.value = "R$";
+  const itens = itensComModelo(r.itens);
+  (itens.length ? itens : [{}]).forEach((d) => adicionarItem(d));
+}
+function carregarRascunho() {
+  try { return JSON.parse(localStorage.getItem(chaveRascunho)); } catch (e) { return null; }
+}
+// Campo oculto não volta sozinho com o reset: sem isto o novo herdaria dados do anterior
+function limparFormulario() {
+  form.reset();
+  form.idServidor.value = "";
+  form.previsaoAuto.value = "1";
+  form.pagamentoAuto.value = "1";
+}
+function novoOrcamento() {
+  limparFormulario();
+  listaItens.innerHTML = "";
+  form.numero.value = "";
+  form.data.value = hoje();
+  form.validade.value = somarDias(form.data.value, VALIDADE_DIAS);
+  form.consideracoes.value = CONSIDERACOES_PADRAO;
+  adicionarItem();
+}
+
+// Mudou a previsão na mão: para de calcular sozinho. Apagou: volta ao automático
+form.previsao.addEventListener("input", () => { form.previsaoAuto.value = form.previsao.value ? "" : "1"; });
+// Editou a forma de pagamento: fica como você escreveu. Apagou tudo: volta ao automático
+form.pagamento.addEventListener("input", () => { form.pagamentoAuto.value = form.pagamento.value.trim() ? "" : "1"; });
+// Mudou a data do orçamento: a validade acompanha (e o número, se o mês mudou)
+form.data.addEventListener("change", () => {
+  if (form.data.value) form.validade.value = somarDias(form.data.value, VALIDADE_DIAS);
+  sugerirNumero();
+});
+// Trocou entre orçamento e pedido: cada um tem a sua sequência
+form.tipo.addEventListener("change", () => sugerirNumero());
+
+/* ---------- Máscaras simples ---------- */
+form.telefone.addEventListener("input", () => {
+  const d = form.telefone.value.replace(/\D/g, "").slice(0, 11);
+  let v = d;
+  if (d.length > 2) v = `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length === 11) v = `(${d.slice(0, 2)}) ${d.slice(2, 3)} ${d.slice(3, 7)}-${d.slice(7)}`;
+  else if (d.length > 6) v = `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  form.telefone.value = v;
+});
+form.cep.addEventListener("input", () => {
+  const d = form.cep.value.replace(/\D/g, "").slice(0, 8);
+  form.cep.value = d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d;
+});
+["frete", "desconto"].forEach((n) => form[n].addEventListener("input", () => soValorEmReais(form[n])));
+// Ajuste (%): aceita um sinal + ou - no começo e depois só números
+form.descontoPct.addEventListener("input", () => {
+  const c = form.descontoPct;
+  const sinal = (c.value.trim().match(/^[+-]/) || [""])[0];
+  const resto = { value: c.value.replace(/^\s*[+-]/, "") };
+  soNumerosDecimal(resto);
+  const v = sinal + resto.value;
+  if (v !== c.value) c.value = v;
+});
+
+form.addEventListener("input", atualizar);
+form.addEventListener("change", atualizar);
+document.querySelector("#add-item").addEventListener("click", () => adicionarItem());
+// Item avulso: já vem como "Serviço / outro item" (valor fixo), com o cursor no nome
+document.querySelector("#add-avulso").addEventListener("click", () => {
+  const i = MODELOS.findIndex((m) => m.nome === "Serviço / outro item");
+  adicionarItem({ modelo: i >= 0 ? String(i) : "" });
+  const novo = listaItens.lastElementChild;
+  novo.querySelector('[data-campo="descricao"]').focus();
+});
+// Guarda o que está na tela (se tiver algo). A tela é liberada na hora; o envio ao servidor segue por trás
+function fecharAtual() {
+  const t = totais();
+  const temAlgo = !!form.cliente.value.trim() || t.total > 0;
+  let envio = Promise.resolve();
+  if (temAlgo) {
+    const dados = dadosAtuais();
+    envio = api("POST", "/orcamentos", { id: form.idServidor.value, dados, resumo: resumoPara(dados, t.total) }).catch(() => null);
+  }
+  // Se veio de um link ou da lista, aquele continua guardado; o novo usa o rascunho geral
+  if (chaveRascunho !== CHAVE_RASCUNHO) {
+    chaveRascunho = CHAVE_RASCUNHO;
+    history.replaceState(null, "", location.pathname);
+  }
+  erro.hidden = true;
+  return { envio };
+}
+// Número do novo: o próximo do mês e do tipo, pedido ao servidor depois que o anterior foi salvo
+// (tela vazia não é salva, então não gasta número)
+async function numerarNovo({ envio }) {
+  form.numero.value = "";
+  atualizar();
+  salvarRascunho();
+  await envio;
+  await sugerirNumero();
+}
+document.querySelector("#novo").addEventListener("click", () => {
+  if (!confirm("Começar um orçamento novo? O atual é salvo e sai da tela.")) return;
+  const fechado = fecharAtual();
+  novoOrcamento();
+  window.scrollTo({ top: 0 });
+  numerarNovo(fechado);
+});
+
+/* ---------- PDF ---------- */
+// O PDF usa a fonte padrão (Latin-1): troca caracteres que ela não tem
+const txt = (s) => String(s || "")
+  .replace(/[–—]/g, "-").replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
+  .replace(/→/g, "->").replace(/[^\x00-\xFF]/g, "");
+
+function imagemParaDataURL(src, max = 1400, tipo = "image/jpeg") {
+  return new Promise((ok, falha) => {
+    const img = new Image();
+    img.onload = () => {
+      const r = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * r);
+      c.height = Math.round(img.naturalHeight * r);
+      const g = c.getContext("2d");
+      if (tipo === "image/jpeg") { g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); }
+      g.drawImage(img, 0, 0, c.width, c.height);
+      ok({ data: c.toDataURL(tipo, 0.85), w: c.width, h: c.height });
+    };
+    img.onerror = falha;
+    img.src = src;
+  });
+}
+const arquivoParaURL = (f) => new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(f); });
+
+async function gerarPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = 210, M = 14, AZUL = [40, 76, 102], LARANJA = [211, 172, 45], CINZA = [90, 96, 94];
+  const t = totais();
+  const f = form;
+  const tipo = f.tipo.value || "Orçamento"; // "Orçamento" ou "Pedido"
+  const ocultarMedidas = f.ocultarMedidas.checked;
+
+  // Cabeçalho
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...AZUL);
+  doc.text(tipo.toUpperCase(), M, 13);
+  doc.setDrawColor(...AZUL); doc.setLineWidth(0.4); doc.line(M + doc.getTextWidth(tipo.toUpperCase()) + 4, 12, W - M, 12);
+
+  try {
+    const logo = await imagemParaDataURL(EMPRESA.logo, 480, "image/png");
+    const lw = 46; doc.addImage(logo.data, "PNG", M, 18, lw, lw * logo.h / logo.w);
+  } catch (e) {
+    doc.setFontSize(18); doc.text(EMPRESA.nome, M, 30);
+  }
+
+  // Dados da Haus (esquerda) e do cliente (direita) começam na mesma linha
+  const Y_NOME = 46, Y_LINHAS = 50.5, ENTRELINHA = 4.2;
+  doc.setTextColor(30, 37, 35); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5);
+  doc.text(EMPRESA.nome, M, Y_NOME);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  let y = Y_LINHAS;
+  EMPRESA.linhas.forEach((l) => { doc.text(txt(l), M, y); y += ENTRELINHA; });
+  if (f.vendedor.value) { doc.text(txt(`Vendedor: ${f.vendedor.value}`), M, y); y += ENTRELINHA; }
+
+  // Cliente: encostado no canto direito, nas mesmas linhas dos dados da Haus
+  const XD = W - M, LARG_C = 85;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(...AZUL);
+  doc.text("CLIENTE", XD, Y_NOME - 5, { align: "right" });
+  doc.setTextColor(30, 37, 35); doc.setFontSize(9.5);
+  doc.text(txt(f.cliente.value), XD, Y_NOME, { align: "right", maxWidth: LARG_C });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  let yc = Y_LINHAS;
+  [f.documento.value && `CPF/CNPJ: ${f.documento.value}`, f.endereco.value, [f.bairro.value, f.cidade.value].filter(Boolean).join(" - "),
+    f.cep.value && `CEP ${f.cep.value}`, f.telefone.value && `Tel.: ${f.telefone.value}`]
+    .filter(Boolean).forEach((l) => {
+      // Linha longa (ex.: endereço) quebra em mais de uma, sem invadir a margem
+      doc.splitTextToSize(txt(l), LARG_C).forEach((parte) => { doc.text(parte, XD, yc, { align: "right" }); yc += ENTRELINHA; });
+    });
+
+  // Faixa de informações
+  const yi = Math.max(y, yc) + 6;
+  doc.setDrawColor(...AZUL); doc.setLineWidth(0.6); doc.line(M, yi, W - M, yi);
+  const info = [
+    [`Nº do ${tipo}`, f.numero.value || "-"],
+    ["Data", dataBR(f.data.value)],
+    // Pedido fechado não tem validade
+    ...(tipo === "Pedido" ? [] : [["Válido até", dataBR(f.validade.value) || "-"]]),
+    ["Previsão de Entrega", dataBR(f.previsao.value) || "A combinar"],
+    ["Valor Total", numero.format(t.total)],
+  ];
+  const colW = (W - 2 * M) / info.length;
+  const ultima = info.length - 1;
+  info.forEach(([rotulo, valor], i) => {
+    const x = M + colW * i;
+    const destaque = i === ultima;
+    if (destaque) { doc.setFillColor(228, 232, 243); doc.rect(x, yi + 1.5, colW, 17, "F"); }
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...CINZA);
+    doc.text(txt(rotulo), x + colW / 2, yi + 7, { align: "center" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(destaque ? 13 : 11.5);
+    if (destaque) doc.setTextColor(...AZUL); else doc.setTextColor(30, 37, 35);
+    doc.text(txt(valor), x + colW / 2, yi + 14.5, { align: "center" });
+  });
+  doc.setLineWidth(0.6); doc.line(M, yi + 20, W - M, yi + 20);
+
+  // Tabela de itens
+  const linhas = t.itens.filter((i) => MODELOS[i.dados.modelo]).map(({ dados, r, totalAjustado }) => {
+    const m = MODELOS[dados.modelo];
+    // Item de valor fixo com descrição: a própria descrição vira o título (sem "SERVIÇO / OUTRO ITEM")
+    const titulo = m.fixo && dados.descricao ? "" : m.nome.toUpperCase();
+    const desc = [titulo, m.guia && dados.guia && "Com guia", dados.descricao, !ocultarMedidas && r.medida].filter(Boolean).join("\n");
+    // Preço já com o ajuste interno embutido
+    return [txt(dados.ambiente || "-"), txt(desc), String(r.qtd || 1), txt(reais.format(totalAjustado))];
+  });
+  doc.autoTable({
+    startY: yi + 25,
+    head: [["AMBIENTE", "DESCRIÇÃO", "QTD", "PREÇO"]],
+    body: linhas,
+    theme: "plain",
+    margin: { left: M, right: M },
+    styles: { font: "helvetica", fontSize: 8.5, cellPadding: { top: 2.2, bottom: 2.2, left: 2, right: 2 }, textColor: [30, 37, 35], valign: "top" },
+    headStyles: { fontStyle: "bold", textColor: AZUL, fontSize: 8 },
+    columnStyles: { 0: { cellWidth: 32 }, 2: { cellWidth: 14, halign: "center" }, 3: { cellWidth: 32, halign: "right" } },
+    didDrawCell: (d) => {
+      doc.setDrawColor(d.section === "head" ? AZUL[0] : 200, d.section === "head" ? AZUL[1] : 205, d.section === "head" ? AZUL[2] : 215);
+      doc.setLineWidth(d.section === "head" ? 0.5 : 0.2);
+      doc.line(d.cell.x, d.cell.y + d.cell.height, d.cell.x + d.cell.width, d.cell.y + d.cell.height);
+    },
+  });
+
+  // Forma de pagamento e observações (à esquerda) e totais (à direita)
+  let yt = doc.lastAutoTable.finalY + 8;
+  if (yt > 240) { doc.addPage(); yt = 20; }
+  doc.setFontSize(8.5); doc.setTextColor(30, 37, 35);
+  // Texto do campo "Forma de pagamento" (automático ou editado); vazio = não aparece
+  const pagamento = f.pagamento.value.split("\n").map((s) => s.trim()).filter(Boolean)
+    .flatMap((linha) => doc.splitTextToSize(txt(linha), 105));
+  let yObs = yt;
+  if (pagamento.length) {
+    doc.setFont("helvetica", "bold");
+    doc.text("FORMA DE PAGAMENTO:", M, yt);
+    doc.setFont("helvetica", "normal");
+    pagamento.forEach((linha, i) => doc.text(linha, M, yt + 5 + i * 4.5));
+    yObs = yt + 5 + pagamento.length * 4.5 + 3;
+  }
+  doc.setFont("helvetica", "bold");
+  doc.text("OBS:", M, yObs);
+  doc.setFont("helvetica", "normal");
+  const obs = doc.splitTextToSize(txt(f.obs.value || "-"), 105);
+  doc.text(obs, M, yObs + 5);
+
+  const xr = W - M;
+  // O ajuste interno já está nos itens e no subtotal; aqui só o desconto visível
+  const rotuloDesconto = t.descontoPct ? `DESCONTO (${numero.format(t.descontoPct).replace(",00", "")}%)` : "DESCONTO";
+  const linhasTotais = [["SUBTOTAL", t.subtotal], ["FRETE", t.frete], [rotuloDesconto, t.desconto]];
+  linhasTotais.forEach(([r, v], i) => {
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+    doc.text(`${r}  ${txt(reais.format(v))}`, xr, yt + i * 5.5, { align: "right" });
+  });
+  const yTot = yt + linhasTotais.length * 5.5 + 3;
+  doc.setDrawColor(...AZUL); doc.setLineWidth(0.4); doc.line(xr - 62, yTot - 4, xr, yTot - 4);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...AZUL);
+  doc.text(`TOTAL  ${txt(reais.format(t.total))}`, xr, yTot + 1.5, { align: "right" });
+
+  // Considerações gerais (abaixo do que terminar por último: observações ou total)
+  let yg = Math.max(yObs + 5 + obs.length * 4, yTot + 6) + 6;
+  const cons = f.consideracoes.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (cons.length) {
+    if (yg > 250) { doc.addPage(); yg = 20; }
+    doc.setDrawColor(...AZUL); doc.setLineWidth(0.4); doc.line(M, yg - 4, W - M, yg - 4);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(30, 37, 35);
+    doc.text("CONSIDERAÇÕES GERAIS:", M, yg);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.8);
+    yg += 4.5;
+    cons.forEach((c, i) => {
+      const ls = doc.splitTextToSize(txt(`${i + 1}- ${c}`), W - 2 * M);
+      if (yg + ls.length * 3.6 > 282) { doc.addPage(); yg = 20; }
+      doc.text(ls, M, yg); yg += ls.length * 3.6 + 1;
+    });
+  }
+
+  // Fotos (opcional)
+  const fotos = [...(f.fotos.files || [])].slice(0, 2);
+  if (fotos.length) {
+    const imgs = [];
+    for (const arq of fotos) { try { imgs.push(await imagemParaDataURL(await arquivoParaURL(arq), 1400)); } catch (e) {} }
+    if (imgs.length) {
+      const h = 62;
+      if (yg + h + 6 > 282) { doc.addPage(); yg = 20; } else { yg += 4; }
+      let x = M;
+      imgs.forEach((im) => {
+        const prop = im.w / im.h;
+        const w = Math.min(88, h * prop);
+        doc.addImage(im.data, "JPEG", x, yg, w, w / prop);
+        x += w + 6;
+      });
+    }
+  }
+
+  // Rodapé em todas as páginas
+  const paginas = doc.getNumberOfPages();
+  for (let p = 1; p <= paginas; p++) {
+    doc.setPage(p);
+    doc.setDrawColor(...LARANJA); doc.setLineWidth(0.8); doc.line(M, 287, W - M, 287);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...CINZA);
+    doc.text(txt(`${EMPRESA.nome} - ${EMPRESA.site} - ${EMPRESA.telefone}`), M, 291.5);
+    doc.text(`${tipo} Nº ${txt(f.numero.value)} - Pág. ${p}/${paginas}`, W - M, 291.5, { align: "right" });
+  }
+
+  const nomeArquivo = `${tipo === "Pedido" ? "Pedido" : "Orcamento"} ${f.numero.value || ""} - ${f.cliente.value || "cliente"}`.replace(/[\\/:*?"<>|]/g, "").trim();
+  doc.save(`${nomeArquivo}.pdf`);
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  erro.hidden = true;
+  erro.style.color = "";
+  form.querySelectorAll(".invalido").forEach((c) => c.classList.remove("invalido"));
+  const faltando = [form.numero, form.data, form.cliente].filter((c) => !c.value.trim());
+  const t = totais();
+  if (!t.itens.some((i) => i.r.total > 0)) faltando.push(listaItens.querySelector('[data-campo="modelo"]'));
+  if (faltando.length) {
+    faltando.forEach((c) => c && c.classList.add("invalido"));
+    erro.textContent = "Preencha número, data, cliente e pelo menos um item com valor.";
+    erro.hidden = false;
+    return;
+  }
+  if (!window.jspdf) { erro.textContent = "Não foi possível carregar o gerador de PDF. Verifique a internet e tente de novo."; erro.hidden = false; return; }
+  await gerarPDF();
+  // Baixou o PDF: guarda também no servidor, para aparecer em "Meus orçamentos"
+  if (await salvarNoServidor({ silencioso: true })) aviso(`PDF baixado e ${form.tipo.value.toLowerCase()} nº ${form.numero.value} salvo em "Meus orçamentos".`);
+});
+
+/* ---------- Pedido vindo do simulador do site (link #i=...) ---------- */
+function lerPedidoDoLink() {
+  const m = location.hash.match(/^#i=([A-Za-z0-9_-]+)$/);
+  if (!m) return null;
+  try {
+    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const dados = JSON.parse(new TextDecoder().decode(bytes));
+    return Array.isArray(dados) ? dados : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Identificador curto de cada link (para guardar o rascunho dele separado)
+function idDoLink(texto) {
+  let h = 5381;
+  for (let i = 0; i < texto.length; i++) h = ((h * 33) ^ texto.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+function carregarPedido(pedido) {
+  novoOrcamento();
+  listaItens.innerHTML = "";
+  pedido.forEach((p) => {
+    const indice = MODELOS.findIndex((m) => m.nome === p.m);
+    adicionarItem({
+      ambiente: p.a || "",
+      modelo: indice >= 0 ? String(indice) : "",
+      largura: p.l ? numero.format(p.l) : "",
+      altura: p.h ? numero.format(p.h) : "",
+      qtd: String(p.q || 1),
+      guia: p.g ? "1" : "",
+      descricao: p.d || (indice < 0 && p.m ? p.m : ""),
+    });
+  });
+  if (!pedido.length) adicionarItem();
+  // Dados que o cliente preencheu no simulador (vêm no 1º item do link)
+  const c = pedido[0] || {};
+  if (c.cn) form.cliente.value = c.cn;
+  if (c.cb) form.bairro.value = c.cb;
+  if (c.co) form.obs.value = `Como conheceu: ${c.co}`;
+}
+
+// Abrir outro link com esta página já aberta: recarrega para carregar o pedido certo
+window.addEventListener("hashchange", () => { if (lerPedidoDoLink()) location.reload(); });
+
+/* ---------- Login ----------
+   Login e senha são conferidos no servidor de acessos (Cloudflare Worker).
+   Nada da senha fica no site. O administrador é o usuário definido no worker (ADMIN.usuario). */
+const API_ACESSOS = (() => {
+  // Só na prévia local dá para apontar para outro servidor (testes)
+  try { if (location.hostname === "localhost" && localStorage.getItem("haus-api")) return localStorage.getItem("haus-api"); } catch (e) {}
+  // HAUS: trocar CONTA pelo subdomínio workers.dev da conta Cloudflare da Haus depois de publicar o worker
+  return "https://haus-acessos.CONTA.workers.dev";
+})();
+const CHAVE_ACESSO = "haus-orcamento-acesso";
+const formLogin = document.querySelector("#form-login");
+const loginErro = document.querySelector("#login-erro");
+const botaoAcessos = document.querySelector("#abrir-acessos");
+
+function lerAcesso() {
+  try { return localStorage.getItem(CHAVE_ACESSO) || sessionStorage.getItem(CHAVE_ACESSO) || ""; } catch (e) { return ""; }
+}
+function apagarAcesso() {
+  try { localStorage.removeItem(CHAVE_ACESSO); sessionStorage.removeItem(CHAVE_ACESSO); } catch (e) {}
+}
+async function api(metodo, rota, corpo) {
+  const acesso = lerAcesso();
+  const r = await fetch(API_ACESSOS + rota, {
+    method: metodo,
+    headers: { "Content-Type": "application/json", ...(acesso ? { Authorization: `Bearer ${acesso}` } : {}) },
+    body: corpo ? JSON.stringify(corpo) : undefined,
+  });
+  const dados = await r.json().catch(() => ({}));
+  return { ...dados, ok: r.ok, status: r.status };
+}
+function mostrarErroLogin(texto) {
+  loginErro.textContent = texto;
+  loginErro.hidden = false;
+}
+let usuarioAtual = "";
+function liberar(adm, usuario) {
+  document.body.classList.remove("bloqueado");
+  botaoAcessos.hidden = !adm;
+  botaoRenumerar.hidden = !adm;
+  usuarioAtual = usuario || "";
+  iniciar();
+}
+
+formLogin.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginErro.hidden = true;
+  const usuario = formLogin.usuario.value.trim().toLowerCase();
+  // Tira espaços que o teclado do celular às vezes coloca no fim
+  const senha = formLogin.senha.value.trim();
+  if (!usuario || !senha) return mostrarErroLogin("Informe login e senha.");
+  const botao = formLogin.querySelector("button");
+  botao.disabled = true;
+  let r = null;
+  try { r = await api("POST", "/login", { usuario, senha }); } catch (err) {}
+  botao.disabled = false;
+  if (!r) return mostrarErroLogin("Sem conexão com o servidor. Confira a internet e tente de novo.");
+  if (!r.ok) {
+    formLogin.senha.value = "";
+    formLogin.senha.focus();
+    return mostrarErroLogin(r.erro || "Login ou senha incorretos.");
+  }
+  try { (formLogin.lembrar.checked ? localStorage : sessionStorage).setItem(CHAVE_ACESSO, r.acesso); } catch (err) {}
+  formLogin.reset();
+  liberar(r.adm, r.usuario);
+});
+
+document.querySelector("#sair").addEventListener("click", () => {
+  apagarAcesso();
+  location.reload();
+});
+
+/* ---------- Gerenciar acessos (só administrador) ---------- */
+const painel = document.querySelector("#painel-acessos");
+const formAcesso = document.querySelector("#form-acesso");
+const listaAcessos = document.querySelector("#lista-acessos");
+const msgAcessos = document.querySelector("#acessos-msg");
+
+function avisoAcessos(texto, ok) {
+  msgAcessos.textContent = texto;
+  msgAcessos.style.color = ok ? "#1f6b33" : "";
+  msgAcessos.hidden = !texto;
+}
+function botaoLinha(texto, acao) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn btn--linha";
+  b.textContent = texto;
+  b.addEventListener("click", async () => { b.disabled = true; await acao(); });
+  return b;
+}
+async function carregarAcessos() {
+  listaAcessos.innerHTML = '<li class="vazio">Carregando...</li>';
+  const r = await api("GET", "/usuarios").catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  listaAcessos.innerHTML = "";
+  if (!r.ok) return avisoAcessos(r.erro || "Não foi possível carregar a lista.");
+  if (!r.usuarios.length) {
+    listaAcessos.innerHTML = '<li class="vazio">Ninguém adicionado ainda. Só o administrador tem acesso.</li>';
+    return;
+  }
+  r.usuarios.forEach((u) => {
+    const li = document.createElement("li");
+    const email = document.createElement("span");
+    email.className = "email";
+    email.textContent = u.email;
+    const status = document.createElement("span");
+    status.className = `status${u.ativo ? "" : " status--bloq"}`;
+    status.textContent = u.ativo ? "Liberado" : "Bloqueado";
+    const alternar = botaoLinha(u.ativo ? "Bloquear" : "Desbloquear", async () => {
+      const res = await api("POST", "/usuarios/status", { email: u.email, ativo: !u.ativo }).catch(() => ({ ok: false }));
+      avisoAcessos(res.ok ? `${u.email} ${u.ativo ? "bloqueado" : "desbloqueado"}.` : res.erro || "Não deu certo, tente de novo.", res.ok);
+      carregarAcessos();
+    });
+    const remover = botaoLinha("Remover", async () => {
+      if (!confirm(`Remover ${u.email}? A pessoa perde o acesso.`)) return carregarAcessos();
+      const res = await api("POST", "/usuarios/remover", { email: u.email }).catch(() => ({ ok: false }));
+      avisoAcessos(res.ok ? `${u.email} removido.` : res.erro || "Não deu certo, tente de novo.", res.ok);
+      carregarAcessos();
+    });
+    li.append(email, status, alternar, remover);
+    listaAcessos.appendChild(li);
+  });
+}
+
+botaoAcessos.addEventListener("click", () => {
+  avisoAcessos("");
+  painel.showModal();
+  carregarAcessos();
+});
+document.querySelector("#fechar-acessos").addEventListener("click", () => painel.close());
+
+formAcesso.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = formAcesso.email.value.trim().toLowerCase();
+  const senha = formAcesso.senha.value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return avisoAcessos("Digite um e-mail válido.");
+  if (senha.length < 6) return avisoAcessos("A senha precisa ter pelo menos 6 caracteres.");
+  const botao = formAcesso.querySelector("button");
+  botao.disabled = true;
+  const res = await api("POST", "/usuarios", { email, senha }).catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  botao.disabled = false;
+  if (!res.ok) return avisoAcessos(res.erro || "Não deu certo, tente de novo.");
+  avisoAcessos(res.atualizado ? `Senha de ${email} atualizada.` : `${email} adicionado. Passe o e-mail e a senha para a pessoa.`, true);
+  formAcesso.reset();
+  carregarAcessos();
+});
+
+/* ---------- Orçamentos salvos no servidor ----------
+   "Salvar" (e "Baixar PDF") guardam o orçamento no servidor; "Meus orçamentos" lista, busca e reabre.
+   Cada pessoa vê os seus; o administrador vê todos. */
+const STATUS = ["Orçamento", "Aprovado", "Em produção", "Pronto", "Instalado", "Perdido"];
+const painelLista = document.querySelector("#painel-lista");
+const listaOrc = document.querySelector("#lista-orc");
+const listaMsg = document.querySelector("#lista-msg");
+let orcamentosSalvos = [];
+
+function aviso(texto, cor = "#284C66") {
+  erro.textContent = texto;
+  erro.style.color = cor;
+  erro.hidden = !texto;
+}
+function resumoPara(dados, total) {
+  const c = dados.campos || {};
+  return { numero: c.numero, tipo: c.tipo, cliente: c.cliente, bairro: c.bairro, data: c.data, total };
+}
+
+// Guarda no servidor o que está na tela. Devolve true se salvou
+async function salvarNoServidor({ silencioso = false } = {}) {
+  const t = totais();
+  if (!form.cliente.value.trim() && !t.total) {
+    if (!silencioso) aviso("Preencha pelo menos o cliente ou um item antes de salvar.", "");
+    return false;
+  }
+  const dados = dadosAtuais();
+  const r = await api("POST", "/orcamentos", { id: form.idServidor.value, dados, resumo: resumoPara(dados, t.total) })
+    .catch(() => ({ ok: false, erro: "Sem conexão com o servidor. O rascunho continua guardado neste aparelho." }));
+  if (!r.ok) {
+    if (!silencioso) aviso(r.erro || "Não foi possível salvar. Tente de novo.", "");
+    return false;
+  }
+  form.idServidor.value = r.id;
+  // O servidor pode ter trocado o número (outra pessoa usou o mesmo ao mesmo tempo)
+  if (r.numero) form.numero.value = r.numero;
+  salvarRascunho();
+  if (!silencioso) aviso(`${form.tipo.value} nº ${form.numero.value} salvo. Ele aparece em "Meus orçamentos" em qualquer aparelho.`);
+  return true;
+}
+document.querySelector("#salvar").addEventListener("click", async (e) => {
+  // Guarda o botão antes do await: depois dele o evento já não sabe qual botão foi
+  const botao = e.currentTarget;
+  botao.disabled = true;
+  await salvarNoServidor();
+  botao.disabled = false;
+});
+
+// Sugere o próximo número do mês e do tipo. Só troca um número vazio, ou um número automático
+// de outro mês ou de outro tipo (ex.: mudou de orçamento para pedido). Número antigo ou digitado à mão fica.
+async function sugerirNumero() {
+  const precisa = () => {
+    const atual = form.numero.value.trim();
+    return !atual || (RE_NUMERO.test(atual) && !atual.startsWith(baseNumero(form.tipo.value, form.data.value)));
+  };
+  if (!precisa()) return;
+  const pedido = `${form.tipo.value}|${form.data.value}`;
+  const p = new URLSearchParams({ tipo: form.tipo.value, data: form.data.value, ignorar: form.idServidor.value });
+  const r = await api("GET", `/proximo-numero?${p}`).catch(() => null);
+  // A resposta chegou depois de outra troca de tipo ou data: vale a mais nova
+  if (!r || !r.ok || !r.numero || pedido !== `${form.tipo.value}|${form.data.value}` || !precisa()) return;
+  form.numero.value = String(r.numero);
+  atualizar();
+  salvarRascunho();
+}
+
+// Primeira vez neste aparelho: manda para o servidor os rascunhos que ficaram guardados aqui
+async function importarRascunhos() {
+  let chaves = [];
+  try { chaves = Object.keys(localStorage).filter((k) => k.startsWith(CHAVE_RASCUNHO)); } catch (e) { return; }
+  for (const chave of chaves) {
+    let r;
+    try { r = JSON.parse(localStorage.getItem(chave)); } catch (e) { continue; }
+    if (!r || !r.campos || r.campos.idServidor) continue;
+    const t = calcularTotais(r.campos, itensComModelo(r.itens));
+    if (!String(r.campos.cliente || "").trim() || !t.total) continue; // rascunho vazio ou incompleto não vai
+    const res = await api("POST", "/orcamentos", { dados: r, resumo: resumoPara(r, t.total) }).catch(() => null);
+    if (!res || !res.ok) return; // sem conexão: tenta de novo na próxima vez
+    r.campos.idServidor = res.id;
+    if (!r.campos.numero) r.campos.numero = res.numero;
+    try { localStorage.setItem(chave, JSON.stringify(r)); } catch (e) {}
+    // Se é o que está aberto na tela, a tela também passa a saber que já foi salvo
+    if (chave === chaveRascunho && !form.idServidor.value) {
+      form.idServidor.value = res.id;
+      if (!form.numero.value.trim()) form.numero.value = res.numero;
+    }
+  }
+}
+
+function avisoLista(texto, ok) {
+  listaMsg.textContent = texto;
+  listaMsg.style.color = ok ? "#1f6b33" : "";
+  listaMsg.hidden = !texto;
+}
+function desenharLista() {
+  // Busca sem diferenciar maiúsculas nem acentos; várias palavras: todas precisam aparecer
+  const simples = (v) => String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const palavras = simples(document.querySelector("#busca-orc").value).split(/\s+/).filter(Boolean);
+  const tipo = document.querySelector("#filtro-tipo").value;
+  const status = document.querySelector("#filtro-status").value;
+  const verArquivados = document.querySelector("#ver-arquivados").checked;
+  const visiveis = orcamentosSalvos.filter((o) => {
+    const texto = simples([o.cliente, o.numero, o.bairro].join(" "));
+    return o.arquivado === verArquivados &&
+      (!tipo || (o.tipo || "Orçamento") === tipo) &&
+      (!status || o.status === status) &&
+      palavras.every((p) => texto.includes(p));
+  });
+  const soma = visiveis.reduce((t, o) => t + (o.total || 0), 0);
+  document.querySelector("#painel-lista h2").textContent = verArquivados ? "Pedidos/orçamentos desativados" : "Meus orçamentos";
+  document.querySelector("#lista-resumo").textContent = visiveis.length
+    ? `${visiveis.length} ${visiveis.length === 1 ? "item" : "itens"} · ${reais.format(soma)}`
+    : "";
+  listaOrc.innerHTML = "";
+  if (!visiveis.length) {
+    listaOrc.innerHTML = `<li><span class="vazio">${verArquivados && !palavras.length && !tipo && !status ? "Nenhum pedido ou orçamento desativado." : orcamentosSalvos.length ? "Nada encontrado com esse filtro." : 'Nenhum orçamento salvo ainda. Use o botão "Salvar" ou "Baixar PDF".'}</span></li>`;
+    return;
+  }
+  // Separado por mês (o mais recente em cima); dentro do mês, orçamentos e depois pedidos, em ordem crescente
+  ordenarPorMes(visiveis);
+  let mesAtual = null;
+  visiveis.forEach((o) => {
+    if (mesDe(o) !== mesAtual) {
+      mesAtual = mesDe(o);
+      const doMes = visiveis.filter((v) => mesDe(v) === mesAtual);
+      const orcs = doMes.filter((v) => v.tipo !== "Pedido").length;
+      const peds = doMes.length - orcs;
+      const titulo = document.createElement("li");
+      titulo.className = "salvos__mes";
+      titulo.textContent = [nomeMes(mesAtual),
+        orcs ? `${orcs} ${orcs === 1 ? "orçamento" : "orçamentos"}` : "",
+        peds ? `${peds} ${peds === 1 ? "pedido" : "pedidos"}` : ""].filter(Boolean).join(" · ");
+      listaOrc.appendChild(titulo);
+    }
+    const li = document.createElement("li");
+    if (o.arquivado) li.className = "is-arquivado";
+    const titulo = document.createElement("span");
+    titulo.className = "salvos__titulo";
+    // Nome do cliente em destaque; o tipo vem numa etiqueta, para não confundir pedido com orçamento
+    const etiqueta = document.createElement("span");
+    etiqueta.className = `salvos__tipo${o.tipo === "Pedido" ? " salvos__tipo--pedido" : ""}`;
+    // Número novo já diz o tipo (ORC/PED); número antigo leva o nome do tipo na frente
+    etiqueta.textContent = RE_NUMERO.test(o.numero || "") ? o.numero : `${o.tipo || "Orçamento"} nº ${o.numero || "-"}`;
+    titulo.append(etiqueta, document.createTextNode(o.cliente || "sem nome"));
+    const valor = document.createElement("span");
+    valor.className = "salvos__valor";
+    valor.textContent = reais.format(o.total || 0);
+    const info = document.createElement("span");
+    info.className = "salvos__info";
+    info.textContent = [o.bairro, `alterado em ${dataBR(String(o.atualizado || "").slice(0, 10))}`, o.dono !== usuarioAtual && o.dono ? `feito por ${o.dono}` : ""].filter(Boolean).join(" · ");
+
+    const acoes = document.createElement("div");
+    acoes.className = "salvos__acoes";
+    const abrir = botaoLinha("Abrir", () => abrirSalvo(o.id));
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Status");
+    sel.innerHTML = STATUS.map((s) => `<option value="${s}"${s === o.status ? " selected" : ""}>${s === "Orçamento" ? "Em aberto" : s}</option>`).join("");
+    sel.addEventListener("change", async () => {
+      const res = await api("POST", "/orcamentos/status", { id: o.id, status: sel.value }).catch(() => ({ ok: false }));
+      if (res.ok) o.status = sel.value;
+      avisoLista(res.ok ? `Nº ${o.numero}: status "${sel.value}".` : res.erro || "Não deu certo, tente de novo.", res.ok);
+      desenharLista();
+    });
+    // "Apagar" não some de vez: vai para "Desativados", de onde dá para restaurar.
+    // O número continua reservado, para não repetir o de um PDF já enviado
+    const arquivar = botaoLinha(o.arquivado ? "Restaurar" : "Apagar", async () => {
+      const nome = `${o.tipo || "Orçamento"} ${o.numero || ""} (${o.cliente || "sem nome"})`;
+      if (!o.arquivado && !confirm(`Apagar ${nome}?\nEle vai para "Desativados" e pode ser restaurado depois.`)) return desenharLista();
+      const res = await api("POST", "/orcamentos/arquivar", { id: o.id, arquivado: !o.arquivado }).catch(() => ({ ok: false }));
+      if (res.ok) o.arquivado = !o.arquivado;
+      avisoLista(res.ok ? `${nome} ${o.arquivado ? 'apagado. Está em "Desativados".' : "restaurado: voltou para a lista."}` : res.erro || "Não deu certo, tente de novo.", res.ok);
+      desenharLista();
+    });
+    const copiar = botaoLinha("Copiar", () => copiarSalvo(o.id));
+    arquivar.classList.add(o.arquivado ? "salvos__restaurar" : "salvos__apagar");
+    acoes.append(abrir, copiar, sel, arquivar);
+    li.append(titulo, valor, info, acoes);
+    listaOrc.appendChild(li);
+  });
+}
+// Mês do documento ("2026-10"): pela data do documento; nos antigos, pelo número ou pela data em que foi salvo
+function mesDe(o) {
+  if (/^\d{4}-\d{2}/.test(o.data || "")) return o.data.slice(0, 7);
+  const m = RE_NUMERO.exec(o.numero || "");
+  if (m) return `20${m[3]}-${m[2]}`;
+  return String(o.atualizado || "").slice(0, 7) || "0000-00";
+}
+function nomeMes(mes) {
+  const [a, m] = mes.split("-").map(Number);
+  if (!a || !m) return "Sem data";
+  const nome = new Date(a, m - 1, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  return nome.charAt(0).toUpperCase() + nome.slice(1);
+}
+function ordenarPorMes(lista) {
+  const seq = (o) => { const m = RE_NUMERO.exec(o.numero || ""); return m ? parseInt(m[4], 10) : parseInt(o.numero, 10) || 0; };
+  const tipo = (o) => (o.tipo === "Pedido" ? 1 : 0);
+  lista.sort((a, b) => mesDe(b).localeCompare(mesDe(a)) || tipo(a) - tipo(b) || seq(a) - seq(b) ||
+    String(a.data || "").localeCompare(String(b.data || "")) || String(a.atualizado).localeCompare(String(b.atualizado)));
+}
+
+/* Reorganizar a numeração dos já salvos (só o administrador): mostra como fica e pede confirmação */
+const botaoRenumerar = document.querySelector("#renumerar");
+botaoRenumerar.addEventListener("click", async () => {
+  botaoRenumerar.disabled = true;
+  avisoLista("Calculando a nova numeração...", true);
+  const previa = await api("POST", "/orcamentos/renumerar", { aplicar: false }).catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  botaoRenumerar.disabled = false;
+  if (!previa.ok) return avisoLista(previa.erro === "Rota não encontrada." ? "O servidor ainda não foi atualizado para a nova numeração." : previa.erro || "Não deu certo, tente de novo.");
+  if (!previa.mudancas.length) return avisoLista("A numeração já está em ordem. Nada para mudar.", true);
+  const linhas = previa.mudancas.slice(0, 12).map((m) => `${m.de || "(sem nº)"} -> ${m.para}  ${m.cliente}`);
+  if (previa.mudancas.length > 12) linhas.push(`... e mais ${previa.mudancas.length - 12}`);
+  const ok = confirm(`Reorganizar a numeração de ${previa.mudancas.length} de ${previa.total} documentos?\n` +
+    "Cada mês recomeça do 001, separado para orçamento (ORC) e pedido (PED), em ordem de data.\n\n" +
+    linhas.join("\n") +
+    "\n\nAtenção: PDFs que já foram enviados a clientes continuam com o número antigo.");
+  if (!ok) return avisoLista("");
+  botaoRenumerar.disabled = true;
+  avisoLista("Aplicando...", true);
+  const r = await api("POST", "/orcamentos/renumerar", { aplicar: true }).catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  botaoRenumerar.disabled = false;
+  if (!r.ok) return avisoLista(r.erro || "Não deu certo, tente de novo.");
+  // O documento aberto na tela também recebe o número novo
+  const doAberto = r.mudancas.find((m) => m.id === form.idServidor.value);
+  if (doAberto) { form.numero.value = doAberto.para; atualizar(); salvarRascunho(); }
+  // Um novo ainda não salvo pede outra vez o número, que pode ter sido usado pela reorganização
+  if (!form.idServidor.value && RE_NUMERO.test(form.numero.value.trim())) { form.numero.value = ""; await sugerirNumero(); }
+  await carregarLista();
+  avisoLista(`Pronto: ${r.mudancas.length} ${r.mudancas.length === 1 ? "documento renumerado" : "documentos renumerados"}.`, true);
+});
+
+async function carregarLista() {
+  listaOrc.innerHTML = '<li><span class="vazio">Carregando...</span></li>';
+  const r = await api("GET", "/orcamentos").catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  if (!r.ok) { listaOrc.innerHTML = ""; return avisoLista(r.erro || "Não foi possível carregar a lista."); }
+  orcamentosSalvos = r.orcamentos;
+  desenharLista();
+}
+// Abre um orçamento salvo: ele passa a ter o próprio rascunho neste aparelho
+async function abrirSalvo(id) {
+  const r = await api("GET", `/orcamentos/${id}`).catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  if (!r.ok) { desenharLista(); return avisoLista(r.erro || "Não foi possível abrir."); }
+  chaveRascunho = `${CHAVE_RASCUNHO}-s-${id}`;
+  history.replaceState(null, "", location.pathname);
+  aplicarDados(r.dados);
+  form.idServidor.value = id;
+  atualizar();
+  painelLista.close();
+  aviso(`${form.tipo.value} nº ${form.numero.value} aberto. Depois de alterar, clique em "Salvar".`);
+  window.scrollTo({ top: 0 });
+}
+// Copia um orçamento salvo para um novo, com o próximo número e a data de hoje. O original não muda
+async function copiarSalvo(id) {
+  const r = await api("GET", `/orcamentos/${id}`).catch(() => ({ ok: false, erro: "Sem conexão com o servidor." }));
+  if (!r.ok) { desenharLista(); return avisoLista(r.erro || "Não foi possível copiar."); }
+  const fechado = fecharAtual();
+  aplicarDados(r.dados);
+  const origem = form.numero.value;
+  form.idServidor.value = "";
+  form.numero.value = "";
+  form.data.value = hoje();
+  form.validade.value = somarDias(form.data.value, VALIDADE_DIAS);
+  form.previsao.value = "";
+  form.previsaoAuto.value = "1";
+  await numerarNovo(fechado);
+  painelLista.close();
+  aviso(`Cópia do nº ${origem} aberta como nº ${form.numero.value || "novo"}. Altere o que precisar e clique em "Salvar".`);
+  window.scrollTo({ top: 0 });
+}
+
+document.querySelector("#abrir-lista").addEventListener("click", () => {
+  avisoLista("");
+  painelLista.showModal();
+  carregarLista();
+});
+document.querySelector("#fechar-lista").addEventListener("click", () => painelLista.close());
+["#busca-orc", "#filtro-tipo", "#filtro-status", "#ver-arquivados"].forEach((s) => {
+  document.querySelector(s).addEventListener("input", desenharLista);
+});
+
+/* ---------- Início (só depois do login) ---------- */
+let iniciado = false;
+async function iniciar() {
+  if (iniciado) return;
+  iniciado = true;
+  await carregarModelos();
+  const pedido = lerPedidoDoLink();
+  // O link fica no endereço: abrir o mesmo link de novo volta para o mesmo orçamento,
+  // e links de clientes diferentes nunca se sobrepõem
+  if (pedido) chaveRascunho = `${CHAVE_RASCUNHO}-${idDoLink(location.hash)}`;
+  const r = carregarRascunho();
+  if (pedido && !(r && r.campos)) {
+    carregarPedido(pedido);
+    erro.textContent = "Pedido do cliente carregado. Confira as medidas da visita e preencha os dados do cliente.";
+    erro.style.color = "#284C66";
+    erro.hidden = false;
+  } else if (r && r.campos) {
+    aplicarDados(r);
+  } else {
+    novoOrcamento();
+  }
+  if (!form.consideracoes.value) form.consideracoes.value = CONSIDERACOES_PADRAO;
+  if (!form.data.value) form.data.value = hoje();
+  atualizar();
+  // Primeiro sobem os rascunhos antigos (a numeração acompanha), depois vem a sugestão do próximo nº
+  importarRascunhos().then(sugerirNumero);
+}
+
+// Já entrou antes neste aparelho? Confirma com o servidor (vale bloqueio na hora)
+(async () => {
+  if (!lerAcesso()) return formLogin.usuario.focus();
+  const r = await api("GET", "/eu").catch(() => null);
+  if (r && r.ok) return liberar(r.adm, r.usuario);
+  apagarAcesso();
+  if (!r) mostrarErroLogin("Sem conexão com o servidor. Confira a internet e tente de novo.");
+  else if (r.status === 401) mostrarErroLogin("Entre novamente.");
+  formLogin.usuario.focus();
+})();
